@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: auth-bot-web
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: WEB_BASE_URL
+        sync: false
+
+  - type: worker
+    name: auth-bot-worker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: WEB_BASE_URL
+        sync: false
+
