@@ -211,9 +211,10 @@ class AuthWebView(discord.ui.View):
 def run_bot():
     asyncio.run(bot.start(TOKEN))
 
+# gunicornでもスレッド起動するようにモジュールレベルで実行
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
+
 if __name__ == "__main__":
-    # Botを別スレッドで起動
-    t = threading.Thread(target=run_bot, daemon=True)
-    t.start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
