@@ -187,8 +187,7 @@ class AuthStartView(discord.ui.View):
                 title="🌐 認証を完了してください",
                 description=(
                     "下のボタンから認証ページへ進んでください。\n"
-                    "Discord アカウントでログインし、"
-                    "**メールアドレスの共有を許可**してください。"
+                    "Discord アカウントでログインしてください"
                 ),
                 colour=discord.Colour.green(),
             ),
