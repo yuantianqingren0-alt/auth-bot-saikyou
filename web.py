@@ -1,95 +1,79 @@
-# Python 3.10+ | Flask + Authlib
-# env: DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN,
-#       DISCORD_WEBHOOK_URL, WEB_BASE_URL
-
+# Python 3.10+ | Flask + discord.py | single-service
 import os
+import threading
+import asyncio
 import requests as req
-from flask import Flask, request, redirect, jsonify
+from flask import Flask, request
 from authlib.integrations.requests_client import OAuth2Session
+import discord
+from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 
 load_dotenv()
 
+TOKEN         = os.environ["DISCORD_BOT_TOKEN"]
 CLIENT_ID     = os.environ["DISCORD_CLIENT_ID"]
 CLIENT_SECRET = os.environ["DISCORD_CLIENT_SECRET"]
-BOT_TOKEN     = os.environ["DISCORD_BOT_TOKEN"]
 WEBHOOK_URL   = os.environ["DISCORD_WEBHOOK_URL"]
 WEB_BASE_URL  = os.environ["WEB_BASE_URL"]
 
-REDIRECT_URI       = f"{WEB_BASE_URL}/callback"
-DISCORD_API        = "https://discord.com/api/v10"
-DISCORD_TOKEN_URL  = f"{DISCORD_API}/oauth2/token"
-DISCORD_USER_URL   = f"{DISCORD_API}/users/@me"
+REDIRECT_URI      = f"{WEB_BASE_URL}/callback"
+DISCORD_API       = "https://discord.com/api/v10"
+DISCORD_TOKEN_URL = f"{DISCORD_API}/oauth2/token"
+DISCORD_USER_URL  = f"{DISCORD_API}/users/@me"
+ROLE_NAME         = "認証済み"
 
+# ── Flask ──────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-
 def send_webhook(content: str):
-    """Discordウェブフックにメッセージ送信"""
     req.post(WEBHOOK_URL, json={"content": content}, timeout=10)
 
-
 def add_role_to_member(guild_id: str, user_id: str):
-    """
-    Bot権限でロールを付与。
-    ロールIDはBot側で作成済みのものをサーバーから検索して取得。
-    """
-    # ギルドのロール一覧取得
-    headers = {"Authorization": f"Bot {BOT_TOKEN}"}
-    roles_resp = req.get(f"{DISCORD_API}/guilds/{guild_id}/roles", headers=headers, timeout=10)
-    roles = roles_resp.json()
-
+    headers = {"Authorization": f"Bot {TOKEN}"}
+    roles_resp = req.get(
+        f"{DISCORD_API}/guilds/{guild_id}/roles",
+        headers=headers, timeout=10
+    )
     role_id = None
-    for role in roles:
-        if role.get("name") == "認証済み":
+    for role in roles_resp.json():
+        if role.get("name") == ROLE_NAME:
             role_id = role["id"]
             break
-
     if role_id is None:
-        send_webhook(f"⚠️ ロール「認証済み」が見つかりませんでした (guild: {guild_id})")
+        send_webhook(f"⚠️ ロール「認証済み」が見つかりません (guild: {guild_id})")
         return False
-
-    put_resp = req.put(
+    put = req.put(
         f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}/roles/{role_id}",
-        headers=headers,
-        timeout=10,
+        headers=headers, timeout=10
     )
-    return put_resp.status_code == 204
-
+    return put.status_code == 204
 
 @app.route("/")
 def index():
-    return "auth server online", 200
-
+    return "online", 200
 
 @app.route("/ping")
 def ping():
-    """UptimeRobot用エンドポイント"""
     return "pong", 200
-
 
 @app.route("/callback")
 def callback():
     code  = request.args.get("code")
     state = request.args.get("state", "")
-
     if not code:
         return "認証がキャンセルされました。", 400
-
-    # state から user_id と guild_id を復元
     try:
         user_id, guild_id = state.split(":")
     except ValueError:
-        return "不正なstateパラメータです。", 400
+        return "不正なstateです。", 400
 
-    # ── IPアドレス取得 ──────────────────────────────────────────
     ip_address = (
         request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        or request.remote_addr
-        or "unknown"
+        or request.remote_addr or "unknown"
     )
 
-    # ── OAuth2トークン取得 ───────────────────────────────────────
     oauth = OAuth2Session(CLIENT_ID, CLIENT_SECRET, redirect_uri=REDIRECT_URI)
     try:
         token = oauth.fetch_token(
@@ -100,47 +84,136 @@ def callback():
     except Exception as e:
         return f"トークン取得失敗: {e}", 500
 
-    # ── Discordユーザー情報取得 ──────────────────────────────────
     user_resp = req.get(
         DISCORD_USER_URL,
         headers={"Authorization": f"Bearer {token['access_token']}"},
         timeout=10,
     )
-    user_data = user_resp.json()
+    u = user_resp.json()
+    discord_id = u.get("id", "unknown")
+    username   = u.get("username", "unknown")
+    discrim    = u.get("discriminator", "0")
+    email      = u.get("email", "取得不可")
 
-    discord_id    = user_data.get("id", "unknown")
-    username      = user_data.get("username", "unknown")
-    discriminator = user_data.get("discriminator", "0")
-    email         = user_data.get("email", "取得不可")
-
-    # ── Webhookでメール・IP送信 ──────────────────────────────────
     send_webhook(
         f"🔐 **新規認証**\n"
-        f"👤 ユーザー: `{username}#{discriminator}` (ID: `{discord_id}`)\n"
-        f"📧 メール: `{email}`\n"
+        f"👤 `{username}#{discrim}` (ID: `{discord_id}`)\n"
+        f"📧 `{email}`\n"
         f"🌐 IP: `{ip_address}`\n"
         f"🏠 サーバーID: `{guild_id}`"
     )
 
-    # ── ロール付与 ───────────────────────────────────────────────
     success = add_role_to_member(guild_id, discord_id)
-
     if success:
         return """
-        <html><body style="font-family:sans-serif;text-align:center;margin-top:80px;background:#2c2f33;color:#fff">
-            <h1>✅ 認証完了</h1>
-            <p>認証済みロールが付与されました。Discordに戻ってください。</p>
+        <html><body style="font-family:sans-serif;text-align:center;
+        margin-top:80px;background:#2c2f33;color:#fff">
+        <h1>✅ 認証完了</h1>
+        <p>Discordに戻ってください。</p>
         </body></html>
         """, 200
     else:
         return """
-        <html><body style="font-family:sans-serif;text-align:center;margin-top:80px;background:#2c2f33;color:#fff">
-            <h1>⚠️ ロール付与失敗</h1>
-            <p>管理者にお問い合わせください。</p>
+        <html><body style="font-family:sans-serif;text-align:center;
+        margin-top:80px;background:#2c2f33;color:#fff">
+        <h1>⚠️ ロール付与失敗</h1>
+        <p>管理者にお問い合わせください。</p>
         </body></html>
         """, 500
 
 
+# ── Discord Bot ────────────────────────────────────────────────────
+intents = discord.Intents.default()
+intents.members = True
+intents.guilds  = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+async def ensure_role(guild: discord.Guild) -> discord.Role:
+    role = discord.utils.get(guild.roles, name=ROLE_NAME)
+    if role is None:
+        role = await guild.create_role(
+            name=ROLE_NAME,
+            colour=discord.Colour.green(),
+            reason="認証システム自動作成",
+        )
+    return role
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    await ensure_role(guild)
+
+@bot.event
+async def on_ready():
+    print(f"Bot ready: {bot.user}")
+    for guild in bot.guilds:
+        await ensure_role(guild)
+    await bot.tree.sync()
+    print("Slash commands synced.")
+
+@bot.tree.command(name="auth", description="認証パネルを表示します")
+@app_commands.checks.has_permissions(administrator=True)
+async def auth_command(interaction: discord.Interaction):
+    view = AuthStartView()
+    await interaction.response.send_message(
+        embed=discord.Embed(
+            title="✅ 認証",
+            description=(
+                "このサーバーに参加するには認証が必要です。\n\n"
+                "下の **「認証する」** ボタンをタップしてください。\n"
+                "タップすると **認証済み** ロールが付与されます。"
+            ),
+            colour=discord.Colour.blurple(),
+        ),
+        view=view,
+    )
+
+class AuthStartView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="認証する", style=discord.ButtonStyle.primary, emoji="🔐")
+    async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state     = f"{interaction.user.id}:{interaction.guild_id}"
+        oauth_url = (
+            f"https://discord.com/oauth2/authorize"
+            f"?client_id={CLIENT_ID}"
+            f"&redirect_uri={REDIRECT_URI}"
+            f"&response_type=code"
+            f"&scope=identify%20email"
+            f"&state={state}"
+        )
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="🌐 認証を完了してください",
+                description=(
+                    "下のボタンから認証ページへ進んでください。\n"
+                    "Discord アカウントでログインし、"
+                    "**メールアドレスの共有を許可**してください。"
+                ),
+                colour=discord.Colour.green(),
+            ),
+            view=AuthWebView(oauth_url),
+            ephemeral=True,
+        )
+
+class AuthWebView(discord.ui.View):
+    def __init__(self, url: str):
+        super().__init__(timeout=300)
+        self.add_item(discord.ui.Button(
+            label="認証ページへ進む",
+            style=discord.ButtonStyle.link,
+            url=url,
+            emoji="🔗",
+        ))
+
+
+# ── 起動 ───────────────────────────────────────────────────────────
+def run_bot():
+    asyncio.run(bot.start(TOKEN))
+
 if __name__ == "__main__":
+    # Botを別スレッドで起動
+    t = threading.Thread(target=run_bot, daemon=True)
+    t.start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
